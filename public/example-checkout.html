@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Checkout example</title></head>
+<body>
+<script src="/client/tracking.js"></script>
+<script src="/client/checkout.js"></script>
+
+<form id="f">
+  <input name="name" placeholder="Name" required>
+  <input name="phone" placeholder="01XXXXXXXXX" required>
+  <select id="ml-division" name="division" required></select>
+  <select id="ml-district" name="district" required></select>
+  <select id="ml-upazila" name="upazila" required></select>
+  <textarea name="address" placeholder="House, road, area" required></textarea>
+  <p>Delivery: <b id="charge">-</b></p>
+  <button>Place order (Cash on Delivery)</button>
+  <p id="msg"></p>
+</form>
+
+<script>
+  // Example cart: replace with your real cart. productId comes from /api/products
+  var cart = [{ productId: 1, qty: 1 }];
+  var subtotal = 0; // compute from your cart
+
+  document.addEventListener('ml:district', function (e) {
+    if (!e.detail) return;
+    mlShop.getCharge(e.detail, subtotal).then(function (r) { document.getElementById('charge').textContent = '৳' + r.charge; });
+  });
+
+  document.getElementById('f').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var d = Object.fromEntries(new FormData(ev.target));
+    d.items = cart;
+    mlShop.placeOrder(d)
+      .then(function (r) { document.getElementById('msg').textContent = 'Order placed: ' + r.orderId + ' (Total ৳' + r.total + ')'; })
+      .catch(function (e) { document.getElementById('msg').textContent = e.message; });
+  });
+</script>
+</body></html>

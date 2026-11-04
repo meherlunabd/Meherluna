@@ -89,7 +89,8 @@ export default async (req, context) => {
   } catch (e) {
     if (e instanceof UserError) return json({ error: e.message }, 400);
     console.error(e);
-    return json({ error: 'Something went wrong. Please try again.' }, 500);
+        return json({ error: path.startsWith('/api/admin') ? 'Server error: ' + (e.message || JSON.stringify(e)) : 'Something went wrong. Please try again.' }, 500);
+
   }
 };
 
@@ -204,7 +205,7 @@ async function admin(req, path, method, url) {
       const row = must(await sb().from('products').insert({
         slug, name: String(body.name).trim(), name_bn: body.name_bn || null, description: body.description || null,
         price: Math.round(Number(body.price)), stock: Math.max(0, Math.floor(Number(body.stock) || 0)),
-        image: body.image || null, category: body.category || null,
+                image: body.image || null, category: body.category || null, active: true,
       }).select('id').single());
       return json({ ok: true, id: row.id });
     }

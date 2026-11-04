@@ -14,6 +14,15 @@ let _sb;
 const sb = () => (_sb ??= createClient(env('SUPABASE_URL'), env('SUPABASE_SERVICE_KEY'), { auth: { persistSession: false } }));
 const must = ({ data, error }) => { if (error) throw error; return data; };
 
+// Settings saved from the admin panel (cached 30s). Falls back to Netlify env vars.
+let _cfg, _cfgAt = 0;
+async function cfgAll() {
+  if (_cfg && Date.now() - _cfgAt < 30000) return _cfg;
+  _cfg = await settingsMap().catch(() => ({})); _cfgAt = Date.now();
+  return _cfg;
+}
+const cfgGet = async (k, envKey) => (await cfgAll())[k] || (envKey ? env(envKey) : '');
+
 const json = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers } });
 
@@ -51,7 +60,7 @@ export default async (req, context) => {
   const path = url.pathname.replace(/\/+$/, '') || '/';
   const method = req.method;
   try {
-    if (path === '/client/tracking.js') return trackingJs();
+    if (path === '/client/tracking.js') return await trackingJs();
     if (path === '/api/locations') return json(LOC, 200, { 'Cache-Control': 'public, max-age=86400' });
 
     if (path === '/api/products' && method === 'GET') {
@@ -89,8 +98,7 @@ export default async (req, context) => {
   } catch (e) {
     if (e instanceof UserError) return json({ error: e.message }, 400);
     console.error(e);
-        return json({ error: path.startsWith('/api/admin') ? 'Server error: ' + (e.message || JSON.stringify(e)) : 'Something went wrong. Please try again.' }, 500);
-
+    return json({ error: path.startsWith('/api/admin') ? 'Server error: ' + (e.message || JSON.stringify(e)) : 'Something went wrong. Please try again.' }, 500);
   }
 };
 
@@ -140,7 +148,7 @@ async function createOrder(req, context) {
 
 // Meta Conversions API (server-side Purchase). Same event_id as the browser Pixel, so Meta de-duplicates.
 async function sendMetaPurchase(o, req, context, body) {
-  const id = env('META_PIXEL_ID'), token = env('META_CAPI_TOKEN');
+  const id = await cfgGet('meta_pixel_id', 'META_PIXEL_ID'), token = await cfgGet('meta_capi_token', 'META_CAPI_TOKEN');
   if (!id || !token) return;
   const sha = (v) => crypto.createHash('sha256').update(String(v).trim().toLowerCase()).digest('hex');
   const payload = {
@@ -205,7 +213,7 @@ async function admin(req, path, method, url) {
       const row = must(await sb().from('products').insert({
         slug, name: String(body.name).trim(), name_bn: body.name_bn || null, description: body.description || null,
         price: Math.round(Number(body.price)), stock: Math.max(0, Math.floor(Number(body.stock) || 0)),
-                image: body.image || null, category: body.category || null, active: true,
+        image: body.image || null, category: body.category || null, active: true,
       }).select('id').single());
       return json({ ok: true, id: row.id });
     }
@@ -224,13 +232,27 @@ async function admin(req, path, method, url) {
     if (method === 'GET') {
       const s = await settingsMap();
       const districts = must(await sb().from('district_charges').select('district,charge').order('district'));
-      return json({ default_charge: Number(s.default_charge || 0), free_delivery_over: Number(s.free_delivery_over || 0), districts });
+      return json({
+        default_charge: Number(s.default_charge || 0),
+        free_delivery_over: Number(s.free_delivery_over || 0),
+        districts,
+        meta_pixel_id: s.meta_pixel_id || env('META_PIXEL_ID'),
+        ga4_id: s.ga4_id || env('GA4_ID'),
+        seo_title: s.seo_title || '',
+        seo_description: s.seo_description || '',
+        capi_set: !!(s.meta_capi_token || env('META_CAPI_TOKEN')),
+      });
     }
     if (method === 'PUT') {
       const rows = [];
       if (body.default_charge !== undefined) rows.push({ key: 'default_charge', value: String(Math.max(0, Math.round(Number(body.default_charge) || 0))) });
       if (body.free_delivery_over !== undefined) rows.push({ key: 'free_delivery_over', value: String(Math.max(0, Math.round(Number(body.free_delivery_over) || 0))) });
+      for (const k of ['meta_pixel_id', 'ga4_id', 'seo_title', 'seo_description']) {
+        if (body[k] !== undefined) rows.push({ key: k, value: String(body[k]).trim().slice(0, 300) });
+      }
+      if (body.meta_capi_token) rows.push({ key: 'meta_capi_token', value: String(body.meta_capi_token).trim() });
       if (rows.length) must(await sb().from('settings').upsert(rows));
+      _cfg = null;
       return json({ ok: true });
     }
   }
@@ -248,11 +270,14 @@ async function admin(req, path, method, url) {
   return json({ error: 'Not found' }, 404);
 }
 
-// ---------- tracking script (Meta Pixel + GA4); IDs come from environment variables ----------
-function trackingJs() {
-  const px = JSON.stringify(env('META_PIXEL_ID'));
-  const ga = JSON.stringify(env('GA4_ID'));
+// ---------- tracking script (Meta Pixel + GA4 + SEO tags); values come from admin settings or environment variables ----------
+async function trackingJs() {
+  const px = JSON.stringify(await cfgGet('meta_pixel_id', 'META_PIXEL_ID'));
+  const ga = JSON.stringify(await cfgGet('ga4_id', 'GA4_ID'));
+  const st = JSON.stringify(await cfgGet('seo_title'));
+  const sd = JSON.stringify(await cfgGet('seo_description'));
   return new Response(`(function(){
+var ST=${st},SD=${sd};if(ST)document.title=ST;if(SD){var m=document.querySelector('meta[name=description]');if(!m){m=document.createElement('meta');m.name='description';document.head.appendChild(m);}m.content=SD;}
 var PIXEL=${px},GA=${ga},BASE=new URL(document.currentScript.src).origin;
 if(PIXEL){!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init',PIXEL);fbq('track','PageView');}
 if(GA){var g=document.createElement('script');g.async=true;g.src='https://www.googletagmanager.com/gtag/js?id='+encodeURIComponent(GA);document.head.appendChild(g);window.dataLayer=window.dataLayer||[];window.gtag=function(){dataLayer.push(arguments)};gtag('js',new Date());gtag('config',GA);}
